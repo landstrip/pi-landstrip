@@ -72,6 +72,9 @@ interface LandstripPolicy {
   filesystem: SandboxFilesystemConfig;
 }
 
+const LANDSTRIP_VERSION = [0, 8, 3] as const;
+const SUPPORTED_PLATFORMS = new Set<NodeJS.Platform>(['linux', 'darwin', 'win32']);
+
 const DEFAULT_CONFIG: SandboxConfig = {
   enabled: true,
   network: {
@@ -473,6 +476,24 @@ function landstripVersion(command: string): string | null {
   const result = spawnSync(command, ['--version'], { encoding: 'utf-8' });
   if (result.status !== 0) return null;
   return result.stdout.trim();
+}
+
+function parseVersion(version: string): [number, number, number] | null {
+  const match = version.match(/\b(\d+)\.(\d+)\.(\d+)\b/);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function hasMinimumVersion(version: string, minimum: readonly [number, number, number]): boolean {
+  const parsed = parseVersion(version);
+  if (!parsed) return false;
+
+  for (let i = 0; i < minimum.length; i++) {
+    if (parsed[i] > minimum[i]) return true;
+    if (parsed[i] < minimum[i]) return false;
+  }
+
+  return true;
 }
 
 function proxyEnv(env: NodeJS.ProcessEnv | undefined, port: number): NodeJS.ProcessEnv {
@@ -928,7 +949,7 @@ export default function (pi: ExtensionAPI) {
   function enableSandbox(ctx: ExtensionContext): boolean {
     const config = loadConfig(ctx.cwd);
 
-    if (process.platform !== 'linux') {
+    if (!SUPPORTED_PLATFORMS.has(process.platform)) {
       sandboxEnabled = false;
       sandboxReady = false;
       ctx.ui.notify(`landstrip sandboxing is not supported on ${process.platform}`, 'warning');
@@ -940,6 +961,13 @@ export default function (pi: ExtensionAPI) {
       sandboxEnabled = false;
       sandboxReady = false;
       ctx.ui.notify(`landstrip was not found. Install it with: cargo install landstrip`, 'error');
+      return false;
+    }
+
+    if (!hasMinimumVersion(version, LANDSTRIP_VERSION)) {
+      sandboxEnabled = false;
+      sandboxReady = false;
+      ctx.ui.notify(`landstrip 0.8.3 or newer is required; found: ${version}`, 'error');
       return false;
     }
 
