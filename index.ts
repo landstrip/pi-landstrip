@@ -73,14 +73,14 @@ interface LandstripPolicy {
 }
 
 interface LandstripErrorResponse {
-  category: 'policy' | 'tool' | 'platform' | 'system';
+  reason: 'Other' | 'LaunchFailed' | 'SetupFailed' | 'Usage';
   file?: string;
   program?: string;
   type?: 'filesystem' | 'network' | 'platform' | 'launch' | 'encoding';
-  message: string;
+  source: string;
 }
 
-const LANDSTRIP_VERSION = [0, 10, 3] as const;
+const LANDSTRIP_VERSION = [0, 11, 0] as const;
 const SUPPORTED_PLATFORMS = new Set<NodeJS.Platform>(['linux', 'darwin', 'win32']);
 
 const DEFAULT_CONFIG: SandboxConfig = {
@@ -418,13 +418,13 @@ function parseLandstripErrors(output: string): LandstripErrorResponse[] {
     }
 
     if (
-      fields.category &&
-      ['policy', 'tool', 'platform', 'system'].includes(fields.category) &&
-      fields.message
+      fields.reason &&
+      ['Other', 'LaunchFailed', 'SetupFailed', 'Usage'].includes(fields.reason) &&
+      fields.source
     ) {
       const error: LandstripErrorResponse = {
-        category: fields.category as LandstripErrorResponse['category'],
-        message: fields.message,
+        reason: fields.reason as LandstripErrorResponse['reason'],
+        source: fields.source,
       };
 
       if (fields.file) error.file = fields.file;
@@ -447,7 +447,7 @@ function parseLandstripErrors(output: string): LandstripErrorResponse[] {
 function formatLandstripErrors(errors: LandstripErrorResponse[]): string {
   return errors
     .map((err) => {
-      const parts: string[] = [`landstrip: ${err.category}`];
+      const parts: string[] = [`landstrip: ${err.reason}`];
 
       if (err.file) {
         parts.push(` (${err.file})`);
@@ -458,7 +458,7 @@ function formatLandstripErrors(errors: LandstripErrorResponse[]): string {
       if (err.type) {
         parts.push(`:${err.type}`);
       }
-      parts.push(`: ${err.message}`);
+      parts.push(`: ${err.source}`);
 
       return parts.join('');
     })
