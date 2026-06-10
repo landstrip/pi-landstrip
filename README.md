@@ -1,5 +1,7 @@
 # pi-landstrip
 
+![pi-landstrip screenshot](screenshot.png)
+
 Landlock-based sandboxing for [pi](https://pi.dev/) using
 [`landstrip`](https://github.com/jarkkojs/landstrip).
 
