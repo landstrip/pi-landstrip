@@ -419,15 +419,22 @@ function extractBlockedPath(output: string, cwd: string, command?: string): stri
     }
   }
 
+  return extractNativeDeniedPath(output, cwd);
+}
+
+function extractNativeDeniedPath(output: string, cwd: string): string | null {
+  let match = output.match(/['"]([^'"\n]+)['"]:\s+(?:Operation not permitted|Permission denied)/);
+  if (match) return normalizePathMatch(match[1], cwd);
+
   // bash/sh: line X: /path: Permission denied
-  let match = output.match(
+  match = output.match(
     /(?:\/bin\/bash|bash|sh): (?:line \d+: )?([^:\n]+): (?:Operation not permitted|Permission denied)/,
   );
   if (match) return normalizePathMatch(match[1], cwd);
 
   // ls/cat/cp: cannot open/access/stat '/path': Permission denied
   match = output.match(
-    /^[a-zA-Z0-9_-]+: cannot (?:open|access|stat|create)(?: directory)? '?([^'\n]+?)'?(?: for (?:reading|writing))?: Permission denied$/m,
+    /^[a-zA-Z0-9_-]+: cannot (?:open|access|stat|create)(?: directory)? '?([^'\n]+?)'?(?: for (?:reading|writing))?: (?:Operation not permitted|Permission denied)$/m,
   );
   if (match) return normalizePathMatch(match[1], cwd);
 
@@ -440,6 +447,25 @@ function extractBlockedPath(output: string, cwd: string, command?: string): stri
   return null;
 }
 
+function extractNativeWriteDeniedPath(output: string, cwd: string): string | null {
+  let match = output.match(
+    /(?:[Uu]nable to create|cannot (?:create|touch|mkdir|remove|unlink|rename)|for writing)[^'"\n]*['"]([^'"\n]+)['"]:\s+(?:Operation not permitted|Permission denied)/m,
+  );
+  if (match) return normalizePathMatch(match[1], cwd);
+
+  match = output.match(
+    /(?:\/bin\/bash|bash|sh): (?:line \d+: )?([^:\n]+): (?:Operation not permitted|Permission denied)/,
+  );
+  if (match) return normalizePathMatch(match[1], cwd);
+
+  match = output.match(
+    /^[a-zA-Z0-9_-]+: cannot create(?: directory)? '?([^'\n]+?)'?(?: for writing)?: (?:Operation not permitted|Permission denied)$/m,
+  );
+  if (match) return normalizePathMatch(match[1], cwd);
+
+  return null;
+}
+
 function extractBlockedWritePath(output: string, cwd: string): string | null {
   for (const error of parseLandstripErrors(output).filter(isFilesystemAccessDenied)) {
     if (error.file && error.operation === 'write') {
@@ -447,7 +473,7 @@ function extractBlockedWritePath(output: string, cwd: string): string | null {
     }
   }
 
-  return null;
+  return extractNativeWriteDeniedPath(output, cwd);
 }
 
 function parseLandstripErrors(output: string): LandstripErrorResponse[] {
@@ -1187,10 +1213,57 @@ export function createLandstripIntegration(
     });
 
     const run = () => sandboxedBash.execute(id, params, signal, onUpdate, ctx);
+    const retryWithWriteAccess = async (
+      blockedPath: string,
+    ): Promise<AgentToolResult<BashToolDetails | undefined> | null> => {
+      if (!ctx.hasUI) return null;
+
+      let config = loadConfig(ctx.cwd);
+      const { globalPath, projectPath } = getConfigPaths(ctx.cwd);
+      if (matchesPattern(blockedPath, config.filesystem.denyWrite)) {
+        ctx.ui.notify(
+          `"${blockedPath}" is blocked by denyWrite. Check:\n  ${projectPath}\n  ${globalPath}`,
+          'warning',
+        );
+        return null;
+      }
+
+      if (shouldPromptForWrite(blockedPath, getEffectiveAllowWrite(ctx.cwd), matchesPattern)) {
+        const choice = await promptWriteBlock(ctx, blockedPath);
+        if (choice === 'abort') return null;
+        await applyWriteChoice(choice, blockedPath, ctx.cwd);
+      }
+
+      config = loadConfig(ctx.cwd);
+      if (matchesPattern(blockedPath, config.filesystem.denyWrite)) {
+        ctx.ui.notify(
+          `"${blockedPath}" was added to allowWrite, but denyWrite still blocks it. Check:\n  ${projectPath}\n  ${globalPath}`,
+          'warning',
+        );
+        return null;
+      }
+
+      onUpdate?.({
+        content: [
+          { type: 'text', text: `\n--- Write access granted for "${blockedPath}", retrying ---\n` },
+        ],
+        details: {},
+      });
+      landstripStderr = '';
+      return run();
+    };
+
     let result: AgentToolResult<BashToolDetails | undefined>;
     try {
       result = await run();
     } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      const blockedPath = extractBlockedWritePath(`${landstripStderr}\n${errorText}`, ctx.cwd);
+      if (blockedPath) {
+        const retryResult = await retryWithWriteAccess(blockedPath);
+        if (retryResult) return retryResult;
+      }
+
       const landstripErrors = parseLandstripErrors(landstripStderr);
       if (landstripErrors.length > 0) {
         throw new Error(formatLandstripErrors(landstripErrors));
@@ -1203,31 +1276,10 @@ export function createLandstripIntegration(
       result.content.unshift({ type: 'text', text: `\n${message}\n` });
     }
     const blockedPath = extractBlockedWritePath(landstripStderr, ctx.cwd);
+    if (!blockedPath) return result;
 
-    if (!blockedPath || !ctx.hasUI) return result;
-
-    const choice = await promptWriteBlock(ctx, blockedPath);
-    if (choice === 'abort') return result;
-
-    await applyWriteChoice(choice, blockedPath, ctx.cwd);
-
-    const config = loadConfig(ctx.cwd);
-    const { globalPath, projectPath } = getConfigPaths(ctx.cwd);
-    if (matchesPattern(blockedPath, config.filesystem.denyWrite)) {
-      ctx.ui.notify(
-        `"${blockedPath}" was added to allowWrite, but denyWrite still blocks it. Check:\n  ${projectPath}\n  ${globalPath}`,
-        'warning',
-      );
-      return result;
-    }
-
-    onUpdate?.({
-      content: [
-        { type: 'text', text: `\n--- Write access granted for "${blockedPath}", retrying ---\n` },
-      ],
-      details: {},
-    });
-    return run();
+    const retryResult = await retryWithWriteAccess(blockedPath);
+    return retryResult ?? result;
   }
 
   async function preflightCommandDomains(
