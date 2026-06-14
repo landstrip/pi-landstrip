@@ -34,10 +34,11 @@ Use Pi settings to toggle sandboxing:
 ```
 
 Project Pi settings override global Pi settings.
+The `/sandbox` UI updates the project setting when present, otherwise the global setting.
 
 ## Usage
 
-Use `/sandbox` inside Pi to show the active config.
+Use `/sandbox` inside Pi to show the active config and toggle the Pi setting.
 
 ## License
 

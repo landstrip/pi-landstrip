@@ -63,10 +63,13 @@ interface SandboxConfig {
 }
 
 interface PiLandstripSettings {
+  [key: string]: unknown;
   landstrip?: {
     enabled?: boolean;
   };
 }
+
+type PiSettingsScope = 'global' | 'project';
 
 interface LandstripPolicy {
   network: {
@@ -190,12 +193,51 @@ function loadConfig(cwd: string): SandboxConfig {
   return deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig);
 }
 
-function isSandboxEnabledInPiSettings(cwd: string): boolean {
+function getPiLandstripSettings(cwd: string): {
+  globalSettings: PiLandstripSettings;
+  projectSettings: PiLandstripSettings;
+} {
   const settings = SettingsManager.create(cwd);
-  const globalSettings = settings.getGlobalSettings() as PiLandstripSettings;
-  const projectSettings = settings.getProjectSettings() as PiLandstripSettings;
+  return {
+    globalSettings: settings.getGlobalSettings() as PiLandstripSettings,
+    projectSettings: settings.getProjectSettings() as PiLandstripSettings,
+  };
+}
 
+function isSandboxEnabledInPiSettings(cwd: string): boolean {
+  const { globalSettings, projectSettings } = getPiLandstripSettings(cwd);
   return projectSettings.landstrip?.enabled ?? globalSettings.landstrip?.enabled ?? true;
+}
+
+function getPiSettingsWriteScope(cwd: string): PiSettingsScope {
+  const { projectSettings } = getPiLandstripSettings(cwd);
+  return projectSettings.landstrip?.enabled === undefined ? 'global' : 'project';
+}
+
+function getPiSettingsPath(cwd: string, scope: PiSettingsScope): string {
+  if (scope === 'project') return join(cwd, '.pi', 'settings.json');
+  return join(getAgentDir(), 'settings.json');
+}
+
+function readPiSettingsFile(settingsPath: string): PiLandstripSettings {
+  if (!existsSync(settingsPath)) return {};
+  return JSON.parse(readFileSync(settingsPath, 'utf-8')) as PiLandstripSettings;
+}
+
+async function setPiSettingsSandboxEnabled(
+  cwd: string,
+  enabled: boolean,
+): Promise<PiSettingsScope> {
+  const scope = getPiSettingsWriteScope(cwd);
+  const settingsPath = getPiSettingsPath(cwd, scope);
+  await withFileMutationQueue(settingsPath, async () => {
+    const settings = readPiSettingsFile(settingsPath);
+    settings.landstrip = { ...settings.landstrip, enabled };
+    mkdirSync(dirname(settingsPath), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf-8');
+  });
+
+  return scope;
 }
 
 function mergeArray(base: string[], override?: string[]): string[] {
@@ -1610,10 +1652,7 @@ export function createLandstripIntegration(
     maybePi.registerCommand?.('sandbox', {
       description: 'Show sandbox configuration',
       handler: async (_args, ctx) => {
-        if (!sandboxEnabled) {
-          notify(ctx, 'Sandbox is disabled', 'info');
-          return;
-        }
+        let piSettingsEnabled = isSandboxEnabledInPiSettings(ctx.cwd);
 
         const config = loadConfig(ctx.cwd);
         const { globalPath, projectPath } = getConfigPaths(ctx.cwd);
@@ -1627,6 +1666,14 @@ export function createLandstripIntegration(
             const text = (s: string) => theme.fg('text', s);
             const borderFg = (s: string) => theme.fg('border', s);
 
+            function sandboxStatus(): { color: 'success' | 'warning'; label: string } {
+              if (noSandboxFlag) return { color: 'warning', label: 'Disabled (--no-sandbox)' };
+              if (!piSettingsEnabled) return { color: 'warning', label: 'Disabled (Pi setting)' };
+              if (!config.enabled) return { color: 'warning', label: 'Disabled (config)' };
+              if (!sandboxEnabled || !sandboxReady) return { color: 'warning', label: 'Inactive' };
+              return { color: 'success', label: 'Active' };
+            }
+
             function boolVal(v: boolean): string {
               return v ? theme.fg('warning', 'yes') : theme.fg('success', 'no');
             }
@@ -1639,120 +1686,108 @@ export function createLandstripIntegration(
 
             return {
               render(width: number): string[] {
-                const innerW = width - 4;
+                const innerW = Math.max(1, width - 4);
                 const border = borderFg('│');
-                const row = (c: string) => makeRow(c, innerW, border);
+                const row = (content: string) => makeRow(content, innerW, border);
                 const lines: string[] = [];
+                const status = sandboxStatus();
+                const toggleValue = piSettingsEnabled
+                  ? theme.fg('success', 'enabled')
+                  : theme.fg('warning', 'disabled');
 
-                // Top border
-                const title = accent(' Sandbox Configuration ');
-                const topFill = borderFg('─'.repeat(Math.max(0, width - 4 - visibleWidth(title))));
-                lines.push(`${borderFg('╭─')}${title}${topFill}${borderFg('─╮')}`);
-
-                // Status
-                const statusDot = theme.fg('success', '●');
-                const pathSnippet = text(truncateToWidth(binaryPath(), Math.max(20, innerW - 27)));
-                lines.push(
-                  row(
-                    `  ${statusDot} ${text('Active')}  ${dim('·')}  ${muted('landstrip:')} ${pathSnippet}`,
-                  ),
-                );
-
-                // Config files
-                lines.push(row(`  ${dim('Config files:')}`));
-                lines.push(row(`    ${dim('project')} ${text(projectPath)}`));
-                lines.push(row(`    ${dim('global')}  ${text(globalPath)}`));
-
-                // Network section
-                lines.push(row(''));
-                lines.push(row(`${'─'.repeat(innerW)}`));
-                const netMode = config.network.allowNetwork ? ' (unrestricted)' : ' (proxied)';
-                lines.push(row(`  ${accent('Network')}${dim(netMode)}`));
-                lines.push(
-                  row(
-                    `  ${dim('•')} ${muted('Allow network:')} ${boolVal(config.network.allowNetwork)}`,
-                  ),
-                );
-                const domainsStr = config.network.allowedDomains.join(', ') || '(none)';
-                lines.push(
-                  row(
-                    `  ${dim('•')} ${muted('Allowed:')} ${text(truncateToWidth(domainsStr, Math.max(10, innerW - 15)))}`,
-                  ),
-                );
-                const denyStr = config.network.deniedDomains.join(', ') || '(none)';
-                lines.push(
-                  row(
-                    `  ${dim('•')} ${muted('Denied:')} ${text(truncateToWidth(denyStr, Math.max(10, innerW - 14)))}`,
-                  ),
-                );
-                if (sessionAllowedDomains.length > 0) {
-                  lines.push(
-                    row(
-                      `  ${dim('•')} ${muted('Session:')} ${theme.fg('accent', sessionAllowedDomains.join(', '))}`,
-                    ),
-                  );
+                function topBorder(titleText: string): string {
+                  const title = accent(` ${titleText} `);
+                  const fill = borderFg('─'.repeat(Math.max(0, width - 4 - visibleWidth(title))));
+                  return `${borderFg('╭─')}${title}${fill}${borderFg('─╮')}`;
                 }
 
-                // Filesystem section
-                lines.push(row(''));
-                lines.push(row(`${'─'.repeat(innerW)}`));
-                lines.push(row(`  ${accent('Filesystem')}`));
-                const denyReadStr = config.filesystem.denyRead.join(', ') || '(none)';
-                lines.push(
-                  row(
-                    `  ${dim('•')} ${muted('Deny read:')} ${text(truncateToWidth(denyReadStr, Math.max(10, innerW - 16)))}`,
-                  ),
-                );
-                const allowReadStr = config.filesystem.allowRead.join(', ') || '(none)';
-                lines.push(
-                  row(
-                    `  ${dim('•')} ${muted('Allow read:')} ${text(truncateToWidth(allowReadStr, Math.max(10, innerW - 17)))}`,
-                  ),
-                );
-                const allowWriteStr = config.filesystem.allowWrite.join(', ') || '(none)';
-                lines.push(
-                  row(
-                    `  ${dim('•')} ${muted('Allow write:')} ${text(truncateToWidth(allowWriteStr, Math.max(10, innerW - 18)))}`,
-                  ),
-                );
-                const denyWriteStr = config.filesystem.denyWrite.join(', ') || '(none)';
-                lines.push(
-                  row(
-                    `  ${dim('•')} ${muted('Deny write:')} ${text(truncateToWidth(denyWriteStr, Math.max(10, innerW - 17)))}`,
-                  ),
-                );
-
-                // Session allowances
-                if (sessionAllowedReadPaths.length > 0 || sessionAllowedWritePaths.length > 0) {
+                function section(titleText: string, detail?: string): void {
                   lines.push(row(''));
-                  if (sessionAllowedReadPaths.length > 0) {
-                    lines.push(
-                      row(
-                        `  ${dim('•')} ${muted('Session read:')} ${theme.fg('accent', sessionAllowedReadPaths.join(', '))}`,
-                      ),
-                    );
-                  }
-                  if (sessionAllowedWritePaths.length > 0) {
-                    lines.push(
-                      row(
-                        `  ${dim('•')} ${muted('Session write:')} ${theme.fg('accent', sessionAllowedWritePaths.join(', '))}`,
-                      ),
-                    );
-                  }
+                  lines.push(row(`${accent(titleText)}${detail ? dim(` · ${detail}`) : ''}`));
                 }
 
-                // Footer
-                lines.push(row(''));
-                lines.push(row(`  ${dim('esc')} ${muted('or any key to close')}`));
+                function item(label: string, value: string): void {
+                  lines.push(row(`  ${dim('•')} ${muted(label.padEnd(13))} ${value}`));
+                }
 
-                // Bottom border
-                lines.push(`${borderFg('╰')}${borderFg('─'.repeat(width - 2))}${borderFg('╯')}`);
+                function listValue(values: string[], maxWidth: number): string {
+                  const value = values.join(', ') || 'none';
+                  return text(truncateToWidth(value, Math.max(10, maxWidth)));
+                }
+
+                lines.push(topBorder('Sandbox'));
+
+                const statusDot = theme.fg(status.color, '●');
+                const pathSnippet = text(truncateToWidth(binaryPath(), Math.max(20, innerW - 28)));
+                lines.push(
+                  row(
+                    `${statusDot} ${text(status.label)} ${dim('·')} Pi setting ${toggleValue} ${dim('·')} ${muted('landstrip')} ${pathSnippet}`,
+                  ),
+                );
+
+                section('Config');
+                item('project', text(projectPath));
+                item('global', text(globalPath));
+
+                const netMode = config.network.allowNetwork ? 'unrestricted' : 'proxied';
+                section('Network', netMode);
+                item('allow network', boolVal(config.network.allowNetwork));
+                item('allowed', listValue(config.network.allowedDomains, innerW - 17));
+                item('denied', listValue(config.network.deniedDomains, innerW - 17));
+                if (sessionAllowedDomains.length > 0)
+                  item('session', theme.fg('accent', sessionAllowedDomains.join(', ')));
+
+                section('Filesystem');
+                item('deny read', listValue(config.filesystem.denyRead, innerW - 17));
+                item('allow read', listValue(config.filesystem.allowRead, innerW - 17));
+                item('allow write', listValue(config.filesystem.allowWrite, innerW - 17));
+                item('deny write', listValue(config.filesystem.denyWrite, innerW - 17));
+
+                if (sessionAllowedReadPaths.length > 0 || sessionAllowedWritePaths.length > 0) {
+                  section('Session grants');
+                  if (sessionAllowedReadPaths.length > 0)
+                    item('read', theme.fg('accent', sessionAllowedReadPaths.join(', ')));
+                  if (sessionAllowedWritePaths.length > 0)
+                    item('write', theme.fg('accent', sessionAllowedWritePaths.join(', ')));
+                }
+
+                lines.push(row(''));
+                lines.push(
+                  row(`${dim('t')} ${muted('toggle Pi setting')}  ${dim('esc')} ${muted('close')}`),
+                );
+                lines.push(
+                  `${borderFg('╰')}${borderFg('─'.repeat(Math.max(0, width - 2)))}${borderFg('╯')}`,
+                );
 
                 return lines;
               },
 
-              handleInput(): void {
-                done(undefined);
+              handleInput(data: string): void {
+                if (data !== 't' && data !== 'T') {
+                  done(undefined);
+                  return;
+                }
+
+                void (async () => {
+                  const enabled = !piSettingsEnabled;
+                  const scope = await setPiSettingsSandboxEnabled(ctx.cwd, enabled);
+                  piSettingsEnabled = isSandboxEnabledInPiSettings(ctx.cwd);
+
+                  if (!enabled) {
+                    disableSandbox(ctx);
+                    notify(ctx, `Sandbox disabled via ${scope} Pi settings`, 'info');
+                  } else if (noSandboxFlag) {
+                    notify(ctx, 'Sandbox remains disabled via --no-sandbox', 'warning');
+                  } else if (!config.enabled) {
+                    notify(ctx, 'Sandbox remains disabled via config', 'info');
+                  } else if (enableSandbox(ctx)) {
+                    notify(ctx, `Sandbox enabled via ${scope} Pi settings`, 'info');
+                  }
+
+                  tui.requestRender();
+                })().catch((error: unknown) => {
+                  notify(ctx, `Could not update Pi settings: ${error}`, 'error');
+                });
               },
 
               invalidate(): void {},
