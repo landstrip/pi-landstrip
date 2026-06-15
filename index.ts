@@ -71,6 +71,7 @@ interface LandstripPolicy {
     allowAllUnixSockets: boolean;
     allowUnixSockets: string[];
     httpProxyPort?: number;
+    socksProxyPort?: number;
   };
   filesystem: SandboxFilesystemConfig;
 }
@@ -86,6 +87,7 @@ interface LandstripErrorResponse {
   program?: string;
   type?: LandstripErrorType;
   source?: string;
+  mechanism?: string;
 }
 
 interface LandstripBashCallbacks {
@@ -93,7 +95,7 @@ interface LandstripBashCallbacks {
   onErrorFd?: (data: Buffer) => void;
 }
 
-const LANDSTRIP_VERSION = [0, 11, 13] as const;
+const LANDSTRIP_VERSION = [0, 12, 2] as const;
 const REQUIRED_LANDSTRIP_VERSION = LANDSTRIP_VERSION.join('.');
 const LANDSTRIP_ERROR_REASONS = new Set<LandstripErrorReason>([
   'Other',
@@ -537,6 +539,8 @@ function parseLandstripErrors(output: string): LandstripErrorResponse[] {
       if (typeof obj.type === 'string' && isLandstripErrorType(obj.type)) {
         error.type = obj.type;
       }
+
+      if (typeof obj.mechanism === 'string') error.mechanism = obj.mechanism;
 
       errors.push(error);
     } catch {
@@ -1138,17 +1142,7 @@ export function createLandstripIntegration(
         const allowNetwork = config.network.allowNetwork;
         const proxy = allowNetwork ? null : await startProxy(ctx, cwd);
         const policy = writePolicyFile(cwd, proxy?.port ?? null);
-        const landstripArgs = [
-          '--error-fd',
-          '3',
-          '--error-format',
-          'json',
-          '-p',
-          policy.path,
-          shell,
-          ...args,
-          command,
-        ];
+        const landstripArgs = ['--trap-fd', '3', '-p', policy.path, shell, ...args, command];
 
         return new Promise((resolvePromise, reject) => {
           let timeoutHandle: NodeJS.Timeout | undefined;
