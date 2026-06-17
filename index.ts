@@ -90,7 +90,7 @@ interface LandstripBashCallbacks {
   onErrorFd?: (data: Buffer) => void;
 }
 
-const LANDSTRIP_VERSION = [0, 14, 5] as const;
+const LANDSTRIP_VERSION = [0, 15, 4] as const;
 const REQUIRED_LANDSTRIP_VERSION = LANDSTRIP_VERSION.join('.');
 const SUPPORTED_PLATFORMS = new Set<NodeJS.Platform>(['linux', 'darwin', 'win32']);
 
