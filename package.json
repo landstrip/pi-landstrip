@@ -34,14 +34,14 @@
     "@landstrip/landstrip": "^0.15.4"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.78.0",
+    "@earendil-works/pi-coding-agent": "^0.79.6",
     "@types/node": "^24.0.0",
     "oxfmt": "^0.53.0",
     "oxlint": "^1.68.0",
     "typescript": "^5.0.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.78.0"
+    "@earendil-works/pi-coding-agent": "^0.79.6"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
