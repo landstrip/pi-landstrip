@@ -113,7 +113,7 @@ const DEFAULT_CONFIG: SandboxConfig = {
   },
   filesystem: {
     denyRead: ['/Users', '/home'],
-    allowRead: ['.', '~/.gitconfig', '/dev/null'],
+    allowRead: ['.', '~/.gitconfig', '~/.config/git/config', '/dev/null'],
     allowWrite: ['.', '/dev/null'],
     denyWrite: ['**/.env', '**/.env.*', '**/*.pem', '**/*.key'],
   },
