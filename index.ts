@@ -1131,18 +1131,30 @@ export function createLandstripIntegration(
     });
   }
 
+  function createSocketPath(): string {
+    const suffix = `${process.pid}-${randomBytes(8).toString('hex')}`;
+
+    if (process.platform === 'win32') {
+      return `\\\\.\\pipe\\pi-landstrip-${suffix}`;
+    }
+
+    return join(tmpdir(), `.landstrip-sock-${suffix}`);
+  }
+
   function createSocketPair(): Promise<[NetSocket, NetSocket]> {
     return new Promise((resolve, reject) => {
-      const sockPath = join(tmpdir(), `.landstrip-sock-${randomBytes(8).toString('hex')}`);
+      const sockPath = createSocketPath();
       const server = createServer();
       server.on('error', reject);
       let client: NetSocket | null = null;
       server.on('connection', (serverEnd) => {
         server.close();
-        try {
-          rmSync(sockPath, { force: true });
-        } catch {
-          /* ok */
+        if (process.platform !== 'win32') {
+          try {
+            rmSync(sockPath, { force: true });
+          } catch {
+            /* ok */
+          }
         }
         if (client) resolve([client, serverEnd]);
       });
