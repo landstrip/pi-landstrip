@@ -327,10 +327,7 @@ function allowsAllDomains(allowedDomains: string[]): boolean {
   return allowedDomains.includes('*');
 }
 
-function shouldPromptForWrite(
-  path: string,
-  allowWrite: string[],
-): boolean {
+function shouldPromptForWrite(path: string, allowWrite: string[]): boolean {
   return allowWrite.length === 0 || !matchesPattern(path, allowWrite);
 }
 
@@ -1002,10 +999,7 @@ export function createLandstripIntegration(
     return { dir, path };
   }
 
-  function startProxy(
-    ctx: ExtensionContext,
-    cwd: string,
-  ): Promise<{ port: number; stop: () => Promise<void> }> {
+  function startProxy(cwd: string): Promise<{ port: number; stop: () => Promise<void> }> {
     const sockets = new Set<Socket>();
 
     function domainAllowed(domain: string): boolean {
@@ -1191,7 +1185,7 @@ export function createLandstripIntegration(
         const { shell, args } = getShellConfig(SettingsManager.create(cwd).getShellPath());
         const config = loadConfig(cwd);
         const allowNetwork = config.network.allowNetwork;
-        const proxy = allowNetwork ? null : await startProxy(ctx, cwd);
+        const proxy = allowNetwork ? null : await startProxy(cwd);
         const policy = writePolicyFile(cwd, proxy?.port ?? null);
         const landstripArgs = ['--trap-fd', '3', '-p', policy.path, shell, ...args, command];
 
