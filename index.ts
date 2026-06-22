@@ -1010,6 +1010,12 @@ export function createLandstripIntegration(
   ): Promise<{ port: number; stop: () => Promise<void> }> {
     const sockets = new Set<Socket>();
 
+    function domainAllowed(domain: string): boolean {
+      const config = loadConfig(cwd);
+      if (domainMatchesAny(domain, config.network.deniedDomains)) return false;
+      return domainMatchesAny(domain, getEffectiveAllowedDomains(config));
+    }
+
     async function handleConnect(client: Socket, target: string, rest: Buffer): Promise<void> {
       const endpoint = splitHostPort(target, 443);
       if (!endpoint || !Number.isFinite(endpoint.port)) {
@@ -1017,7 +1023,7 @@ export function createLandstripIntegration(
         return;
       }
 
-      if (!(await ensureDomainAllowed(ctx, endpoint.host, cwd))) {
+      if (!domainAllowed(endpoint.host)) {
         denyProxyRequest(client);
         return;
       }
@@ -1065,7 +1071,7 @@ export function createLandstripIntegration(
         }
       }
 
-      if (!(await ensureDomainAllowed(ctx, url.hostname, cwd))) {
+      if (!domainAllowed(url.hostname)) {
         denyProxyRequest(client);
         return;
       }
