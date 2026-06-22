@@ -1158,13 +1158,17 @@ export function createLandstripIntegration(
       server.on('error', reject);
       let client: NetSocket | null = null;
       server.on('connection', (serverEnd) => {
+        server.removeListener('error', reject);
         server.close();
         try {
           rmSync(sockPath, { force: true });
         } catch {
           /* ok */
         }
-        if (client) resolve([client, serverEnd]);
+        if (client) {
+          client.removeListener('error', reject);
+          resolve([client, serverEnd]);
+        }
       });
       server.listen(sockPath, () => {
         client = new NetSocket();
