@@ -1247,9 +1247,114 @@ export function createLandstripIntegration(
               callbacks.onStderr?.(data);
               onData(data);
             });
+            let trapBuffer = '';
+            let queryChain: Promise<void> = Promise.resolve();
+
+            const respondQuery = (queryId: number, action: 'allow' | 'deny'): void => {
+              if (trapSocket.destroyed) return;
+              trapSocket.write(JSON.stringify({ query_id: queryId, action }) + '\n');
+            };
+
+            // Surface a denial through the error-fd accumulator so the post-close
+            // notify and the runBashWithOptionalRetry prompt/retry paths still work.
+            const appendErrorLine = (line: string): void => {
+              const infoLine = line + '\n';
+              errorFdAcc += infoLine;
+              callbacks.onErrorFd?.(Buffer.from(infoLine, 'utf8'));
+            };
+
+            // Answer a landstrip query (state:"query"). The broker suspends the
+            // child's syscall until we respond allow/deny on the trap socket.
+            const handleQuery = (
+              queryId: number,
+              operation: LandstripOperation,
+              rawPath: string,
+              rawLine: string,
+            ): void => {
+              const path = normalizeBlockedPath(rawPath, cwd);
+              const config = loadConfig(cwd);
+              const isAllowed = (cfg: SandboxConfig): boolean =>
+                operation === 'read'
+                  ? !matchesPattern(path, cfg.filesystem.denyRead) &&
+                    matchesPattern(path, getEffectiveAllowRead(cfg))
+                  : !matchesPattern(path, cfg.filesystem.denyWrite) &&
+                    !shouldPromptForWrite(path, getEffectiveAllowWrite(cfg));
+
+              if (isAllowed(config)) {
+                respondQuery(queryId, 'allow');
+                return;
+              }
+              // Without an interactive prompt, deny and let the retry path grant.
+              if (!ctx.hasUI || !callbacks.promptOnBlock) {
+                appendErrorLine(rawLine);
+                respondQuery(queryId, 'deny');
+                return;
+              }
+              // denyWrite is a hard block: never prompt to override it.
+              if (operation === 'write' && matchesPattern(path, config.filesystem.denyWrite)) {
+                respondQuery(queryId, 'deny');
+                return;
+              }
+              // Serialize prompts so concurrent queries never overlap on screen and
+              // a path granted by one prompt auto-allows later queries for it.
+              queryChain = queryChain
+                .then(async () => {
+                  const cfg = loadConfig(cwd);
+                  if (isAllowed(cfg)) {
+                    respondQuery(queryId, 'allow');
+                    return;
+                  }
+                  const choice =
+                    operation === 'read'
+                      ? await promptReadBlock(
+                          ctx,
+                          path,
+                          matchesPattern(path, cfg.filesystem.denyRead)
+                            ? 'granting allowRead will override it'
+                            : undefined,
+                        )
+                      : await promptWriteBlock(ctx, path);
+                  if (choice === 'abort') {
+                    respondQuery(queryId, 'deny');
+                    return;
+                  }
+                  if (operation === 'read') await applyReadChoice(choice, path, cwd);
+                  else await applyWriteChoice(choice, path, cwd);
+                  respondQuery(queryId, 'allow');
+                })
+                .catch(() => respondQuery(queryId, 'deny'));
+            };
+
             trapSocket.on('data', (data: Buffer) => {
-              errorFdAcc += data.toString('utf8');
-              callbacks.onErrorFd?.(data);
+              trapBuffer += data.toString('utf8');
+              let nl = trapBuffer.indexOf('\n');
+              while (nl !== -1) {
+                const line = trapBuffer.slice(0, nl);
+                trapBuffer = trapBuffer.slice(nl + 1);
+                nl = trapBuffer.indexOf('\n');
+                if (line.length === 0) continue;
+                let obj: Record<string, unknown> | null = null;
+                try {
+                  const parsed: unknown = JSON.parse(line);
+                  if (typeof parsed === 'object' && parsed !== null) {
+                    obj = parsed as Record<string, unknown>;
+                  }
+                } catch {
+                  obj = null;
+                }
+                if (
+                  obj &&
+                  obj.state === 'query' &&
+                  typeof obj.query_id === 'number' &&
+                  (obj.operation === 'read' || obj.operation === 'write') &&
+                  typeof obj.path === 'string'
+                ) {
+                  handleQuery(obj.query_id, obj.operation, obj.path, line);
+                } else {
+                  // Informational trap (network denials, etc.): keep for post-close handling.
+                  appendErrorLine(line);
+                }
+              }
             });
 
             child.on('error', (error) => {
@@ -1271,39 +1376,12 @@ export function createLandstripIntegration(
 
                 const errorOutput = errorFdAcc || stderrAcc;
 
+                // Filesystem denials are now answered live during execution; only
+                // informational traps (network, etc.) remain to surface here.
                 const blockedPath =
                   extractBlockedPath(errorOutput, cwd) ??
                   (errorFdAcc ? extractBlockedPath(stderrAcc, cwd) : null);
-                const blockedWritePath =
-                  extractBlockedWritePath(errorOutput, cwd) ??
-                  (errorFdAcc ? extractBlockedWritePath(stderrAcc, cwd) : null);
-                if (blockedPath && ctx.hasUI && callbacks.promptOnBlock) {
-                  const config = loadConfig(cwd);
-                  const isDeniedByDenyRead = matchesPattern(
-                    blockedPath,
-                    config.filesystem.denyRead,
-                  );
-                  const isReadAllowed = matchesPattern(blockedPath, getEffectiveAllowRead(config));
-                  const isWriteAllowed = !shouldPromptForWrite(
-                    blockedPath,
-                    getEffectiveAllowWrite(config),
-                  );
-
-                  if (blockedWritePath === blockedPath && !isWriteAllowed) {
-                    const choice = await promptWriteBlock(ctx, blockedPath);
-                    if (choice !== 'abort') await applyWriteChoice(choice, blockedPath, cwd);
-                  } else if (isDeniedByDenyRead || !isReadAllowed) {
-                    const choice = await promptReadBlock(
-                      ctx,
-                      blockedPath,
-                      isDeniedByDenyRead ? 'granting allowRead will override it' : undefined,
-                    );
-                    if (choice !== 'abort') await applyReadChoice(choice, blockedPath, cwd);
-                  } else if (!isWriteAllowed) {
-                    const choice = await promptWriteBlock(ctx, blockedPath);
-                    if (choice !== 'abort') await applyWriteChoice(choice, blockedPath, cwd);
-                  }
-                } else if (!blockedPath && ctx.hasUI) {
+                if (!blockedPath && ctx.hasUI) {
                   const landstripErrors = parseLandstripTraps(errorOutput);
                   if (landstripErrors.length > 0) {
                     const formatted = formatLandstripTraps(landstripErrors);
