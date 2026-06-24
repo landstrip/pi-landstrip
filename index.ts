@@ -122,7 +122,14 @@ const DEFAULT_CONFIG: SandboxConfig = {
     denyRead: ['/Users', '/home'],
     allowRead: ['.', '~/.gitconfig', '~/.config/git/config', '/dev/null'],
     allowWrite: ['.', '/dev/null'],
-    denyWrite: ['**/.env', '**/.env.*', '**/*.pem', '**/*.key'],
+    denyWrite: [
+      '**/.env',
+      '**/.env.*',
+      '**/*.pem',
+      '**/*.key',
+      '.pi/sandbox.json',
+      '~/.pi/agent/sandbox.json',
+    ],
   },
 };
 
