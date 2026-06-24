@@ -167,15 +167,22 @@ function loadConfig(cwd: string): SandboxConfig {
   const projectConfigPath = join(cwd, '.pi', 'sandbox.json');
   const globalConfigPath = join(getAgentDir(), 'sandbox.json');
 
+  if (!existsSync(globalConfigPath)) {
+    mkdirSync(dirname(globalConfigPath), { recursive: true });
+    writeFileSync(
+      globalConfigPath,
+      JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n',
+      'utf-8',
+    );
+  }
+
   let globalConfig: SandboxConfigFile = {};
   let projectConfig: SandboxConfigFile = {};
 
-  if (existsSync(globalConfigPath)) {
-    try {
-      globalConfig = JSON.parse(readFileSync(globalConfigPath, 'utf-8'));
-    } catch (error) {
-      console.error(`Warning: Could not parse ${globalConfigPath}: ${error}`);
-    }
+  try {
+    globalConfig = JSON.parse(readFileSync(globalConfigPath, 'utf-8'));
+  } catch (error) {
+    console.error(`Warning: Could not parse ${globalConfigPath}: ${error}`);
   }
 
   if (existsSync(projectConfigPath)) {
@@ -186,7 +193,7 @@ function loadConfig(cwd: string): SandboxConfig {
     }
   }
 
-  return deepMerge(deepMerge(DEFAULT_CONFIG, globalConfig), projectConfig);
+  return deepMerge(globalConfig, projectConfig);
 }
 
 function mergeArray(base: string[], override?: string[]): string[] {
