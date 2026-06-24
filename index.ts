@@ -19,6 +19,7 @@ import {
   Socket as NetSocket,
 } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { URL } from 'node:url';
 
@@ -108,31 +109,7 @@ const LANDSTRIP_VERSION = [0, 16, 4] as const;
 const REQUIRED_LANDSTRIP_VERSION = LANDSTRIP_VERSION.join('.');
 const SUPPORTED_PLATFORMS = new Set<NodeJS.Platform>(['linux', 'darwin', 'win32']);
 
-const DEFAULT_CONFIG: SandboxConfig = {
-  enabled: true,
-  network: {
-    allowNetwork: false,
-    allowLocalBinding: false,
-    allowAllUnixSockets: false,
-    allowUnixSockets: [],
-    allowedDomains: [],
-    deniedDomains: [],
-  },
-  filesystem: {
-    denyRead: ['/Users', '/home'],
-    allowRead: ['.', '~/.gitconfig', '~/.config/git/config', '/dev/null'],
-    allowWrite: ['.', '/dev/null'],
-    denyWrite: [
-      '**/.env',
-      '**/.env.*',
-      '**/*.pem',
-      '**/*.key',
-      '.pi/sandbox.json',
-      '~/.pi/agent/sandbox.json',
-    ],
-  },
-};
-
+const packageDir = dirname(fileURLToPath(import.meta.url));
 type PermissionChoice = 'abort' | 'session' | 'project' | 'global';
 type NotificationLevel = Parameters<ExtensionContext['ui']['notify']>[1];
 
@@ -168,32 +145,31 @@ function loadConfig(cwd: string): SandboxConfig {
   const globalConfigPath = join(getAgentDir(), 'sandbox.json');
 
   if (!existsSync(globalConfigPath)) {
+    const templatePath = join(packageDir, 'sandbox.json');
     mkdirSync(dirname(globalConfigPath), { recursive: true });
-    writeFileSync(
-      globalConfigPath,
-      JSON.stringify(DEFAULT_CONFIG, null, 2) + '\n',
-      'utf-8',
-    );
+    writeFileSync(globalConfigPath, readFileSync(templatePath, 'utf-8'), 'utf-8');
   }
 
-  let globalConfig: SandboxConfigFile = {};
-  let projectConfig: SandboxConfigFile = {};
-
+  let globalConfig: SandboxConfig = JSON.parse(
+    readFileSync(join(packageDir, 'sandbox.json'), 'utf-8'),
+  );
   try {
-    globalConfig = JSON.parse(readFileSync(globalConfigPath, 'utf-8'));
+    const override = JSON.parse(readFileSync(globalConfigPath, 'utf-8'));
+    globalConfig = deepMerge(globalConfig, override);
   } catch (error) {
     console.error(`Warning: Could not parse ${globalConfigPath}: ${error}`);
   }
 
   if (existsSync(projectConfigPath)) {
     try {
-      projectConfig = JSON.parse(readFileSync(projectConfigPath, 'utf-8'));
+      const projectConfig = JSON.parse(readFileSync(projectConfigPath, 'utf-8'));
+      return deepMerge(globalConfig, projectConfig);
     } catch (error) {
       console.error(`Warning: Could not parse ${projectConfigPath}: ${error}`);
     }
   }
 
-  return deepMerge(globalConfig, projectConfig);
+  return globalConfig;
 }
 
 function mergeArray(base: string[], override?: string[]): string[] {
