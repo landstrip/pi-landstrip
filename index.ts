@@ -782,11 +782,78 @@ function landstripAvailable(): boolean {
   }
 }
 
+// Essential environment variables to forward to the sandboxed process.
+// Only these names (plus their lowercase variants) are passed through.
+// Filtering prevents E2BIG (Argument list too long) when pi's own
+// process environment grows large over a long-running session.
+const FORWARD_ENV_NAMES = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TERM',
+  'COLORTERM',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'DISPLAY',
+  'WAYLAND_DISPLAY',
+  'SSH_AUTH_SOCK',
+  'SSH_AGENT_PID',
+  'XDG_CACHE_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_STATE_HOME',
+  'XDG_RUNTIME_DIR',
+  'DBUS_SESSION_BUS_ADDRESS',
+  'NVM_DIR',
+  'NVM_INC',
+  'NVM_CD_FLAGS',
+  'GIT_ASKPASS',
+  'GIT_TERMINAL_PROMPT',
+  'EDITOR',
+  'VISUAL',
+  'PAGER',
+  'BROWSER',
+  'MANPATH',
+  'INFOPATH',
+  'PKG_CONFIG_PATH',
+  'LD_LIBRARY_PATH',
+  'JAVA_HOME',
+  'GOPATH',
+  'GOROOT',
+  'CARGO_HOME',
+  'RUSTUP_HOME',
+  'PYTHONPATH',
+  'VIRTUAL_ENV',
+  'CONDA_PREFIX',
+  'NODE_PATH',
+  'npm_config_cache',
+  'npm_config_userconfig',
+  'DENO_DIR',
+  'BUN_INSTALL',
+]);
+
+function forwardEnv(baseEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const filtered: NodeJS.ProcessEnv = {};
+  for (const name of Object.keys(baseEnv)) {
+    if (FORWARD_ENV_NAMES.has(name) || FORWARD_ENV_NAMES.has(name.toUpperCase())) {
+      const value = baseEnv[name];
+      if (value !== undefined) filtered[name] = value;
+    }
+  }
+  return filtered;
+}
+
 function proxyEnv(env: NodeJS.ProcessEnv | undefined, port: number): NodeJS.ProcessEnv {
   const url = `http://127.0.0.1:${port}`;
 
   return {
-    ...process.env,
+    ...forwardEnv(process.env),
     ...env,
     HTTP_PROXY: url,
     HTTPS_PROXY: url,
@@ -1189,7 +1256,9 @@ export function createLandstripIntegration(
 
             const child = spawn(binaryPath(), landstripArgs, {
               cwd,
-              env: allowNetwork ? { ...process.env, ...env } : proxyEnv(env, proxy!.port),
+              env: allowNetwork
+                ? { ...forwardEnv(process.env), ...env }
+                : proxyEnv(env, proxy!.port),
               detached: true,
               stdio: ['ignore', 'pipe', 'pipe', childEnd],
             });
