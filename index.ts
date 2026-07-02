@@ -443,6 +443,11 @@ function extractNativeWriteDeniedPath(output: string, cwd: string): string | nul
   );
   if (match) return normalizePathMatch(match[1], cwd);
 
+  match = output.match(
+    /^[a-zA-Z0-9_-]+: couldn't open temporary file (\/[^:\n]+): (?:Operation not permitted|Permission denied)$/m,
+  );
+  if (match) return normalizePathMatch(match[1], cwd);
+
   return null;
 }
 
@@ -1417,6 +1422,7 @@ export function createLandstripIntegration(
         onStderr: (data) => {
           stderrOutput += data.toString('utf8');
         },
+        promptOnBlock: true,
       }),
       shellPath: SettingsManager.create(ctx.cwd).getShellPath(),
     });
